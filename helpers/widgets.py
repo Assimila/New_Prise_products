@@ -145,8 +145,6 @@ class Widgets:
         :return widgets.Dropdown: Dropdown widget object.
         """
         if peat:
-            #projection_list1 = [' ', 'MOD11A1', 'MOD13A2', 'MCD43A3', 'era5']
-           
             projection_list = list(self.projection_list.values())
         else:
             projection_list = self.search.products().name.tolist()
@@ -428,6 +426,18 @@ class Widgets:
                                         disabled=False,
                                         layout=self.item_layout)
     
+    def degree_day_temp(self):
+        """
+        Return a dropdown which contains different temperature products for the
+        user to select from.
+
+        :return widgets.Dropdown: dropdown list of options.
+        """
+        return widgets.Dropdown(options=['skt', 't2m'],
+                                description='Temperature:',
+                                layout=self.item_layout,
+                                disabled=False, )
+    
     def cutoff_type(self):
         """
         Return RadioButtons to allow user to select degree day 
@@ -471,7 +481,6 @@ class Widgets:
         
         :param widget_list: list of widgets
         """
-
         for w in widget_list:
             display(w)
     
@@ -541,7 +550,7 @@ class Widgets:
                                           date2, date3, date4, upload_file, button, m, average,
                                           trends, frequency, save_map, save_format, save_data):
         """
-        Displays the widgets and map on the UI using Boxes.
+        Displays the widgets and map on the UI using Boxes. Used for COP26 demo notebook.
         
         :param operation:     operation selection dropdown widget
         :param product1:      product1 selection dropdown widget
@@ -587,6 +596,24 @@ class Widgets:
 
         box2 = HBox([m, box1], layout=box_layout)
 
+        display(box2)
+        
+    @staticmethod
+    def display_widget_bounding_box(product, subproduct, north, east, south,
+                                          west, date1,  date2, button, m):
+        """
+        Used for peatlands_compare_bounding_box_for_2_timesteps.ipynb notebook.
+        """
+        from ipywidgets import HBox, VBox
+
+        box1 = VBox([product, subproduct, north, east, south,
+                     west, date1, date2, button])
+        box2 = HBox([box1, m])
+        box_layout = widgets.Layout(
+            display='flex',
+            flex_flow='row',
+            align_items='stretch',
+            width='100%')
         display(box2)
 
     @staticmethod
@@ -650,9 +677,6 @@ class Widgets:
                     if value == product:
                         return self.search.get_subproduct_list_of_product(key)
         else:
-            if product == 'era5':
-                return['skt']
-            else:
                 return self.search.get_subproduct_list_of_product(product)
 
     def get_subproduct_trend_analysis(self, product):

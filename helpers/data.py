@@ -16,6 +16,7 @@ from IPython.display import display, clear_output
 from IPython.lib.display import FileLink
 from DQTools.DQTools.dataset import Dataset
 from DQTools.DQTools.search import Search
+from DQTools.DQTools.connect import connect
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -39,31 +40,6 @@ class Data:
                                         '.assimila_dq.txt')
         else:
             self.keyfile = keyfile
-    
-    
-#     def get_data_from_datacube(self, product, subproduct, start, end,
-#                                latitude, longitude):
-#         """
-#         Get a datacube dataset to be exported as a csv.
-        
-#         :param product:     the name of the datacube product
-#         :param subproduct:  the name of the datacube subproduct
-#         :param start:       the start date of the period
-#         :param end:         the end date of the period
-#         :param latitude     the latitude of the point location
-#         :param longitude    the longitude of the point location
-
-#         :return: xarray of datacube dataset data
-#         """
-
-#         ds = Dataset(product=product,
-#                      subproduct=subproduct,
-#                      identfile=self.keyfile)
-
-#         ds.get_data(start=start, stop=end,
-#                     latlon=[latitude, longitude])
-
-#         return ds.data
 
     def get_data_from_datacube_latlon(self, product, subproduct, start, end,
                                       latitude, longitude):
@@ -90,7 +66,7 @@ class Data:
 
             ds.get_data(start=start, stop=end,
                         latlon=[latitude, longitude])
-
+           
             return ds.data
 
     def get_data_from_datacube_nesw(self, product, subproduct, north, east,
@@ -147,9 +123,79 @@ class Data:
         if north and south and north < south:
             raise ValueError('North value should be greater than south')
 
+    def coord_transform_plot(self, y, subproduct, proj):
+        """
+        Reproject the cell coordinates so that the plot seen by the user
+        has coordinate units which match their selection choice.
+        
+        :param y:          the DataArray who's coordinates are being transformed 
+        :param subproduct: the name of the subproduct being investigated
+        :proj:             the user selected projection
+        
+        :return y:         the reprojected DataArray
+        """
+        #######################
+        # No conversion cases #
+        #######################
+        if y[subproduct].crs == "+init=epsg:4326" and proj == 'Lat/Lon':
+            return y
+        
+        elif y[subproduct].crs[:11] == "+proj:tmerc" and proj == 'National Grid':
+            return y
+            
+        elif y[subproduct].crs[:10] == "+proj=sinu" and proj == 'Sinusoidal':
+            return y
+        
+        ####################
+        # Conversion cases #
+        ####################
+        if y[subproduct].crs == "+init=epsg:4326" and proj == 'National Grid':
+            conv = "latlon_to_bng"
+        
+        elif y[subproduct].crs[:11] == "+proj:tmerc" and proj == 'Lat/Lon':
+            conv='bng_to_latlon'
+        
+        elif y[subproduct].crs[:10] == "+proj=sinu" and proj == 'National Grid':
+            conv='sinu_to_bng'
+        
+        elif y[subproduct].crs[:11] == "+proj:tmerc" and proj == 'Sinusoidal':
+            conv='sinu_to_bng'
+            
+        elif y[subproduct].crs[:10] == "+proj=sinu" and proj == 'Lat/Lon':
+            conv='sinu_to_latlon'
+            
+        elif y[subproduct].crs == "+init=epsg:4326" and proj == 'Sinusoidal':
+            conv='latlon_to_sinu'
+            
+            
+        y["latitude"] = [self.coord_transform(0, i, conv)[1] for i in y["latitude"].data]
+        y["longitude"] = [self.coord_transform(i, 0, conv)[0] for i in y["longitude"].data]
+        
+        return y
     
+    @staticmethod
+    def get_units(product, subproduct):
+        """
+        Get the units of a specified product/subproduct.
+        
+        :param product:    the name of the product
+        :param subproduct: the name of the subproduct
+        
+        :return units:     the required unit
+        """
+        conn = connect.Connect(identfile='../../DQTools/DQTools/connect/.assimila_dq')
+        _product = conn.get_all_table_data(tablename='product')
+        product_id = _product[_product.name==product].idproduct.values[0]
+        _subproduct = conn.get_all_table_data(tablename='subproduct')
+        units = _subproduct[_subproduct.idproduct==product_id][_subproduct.name==subproduct].units.values[0]
+        
+        if units == "Kelvin":
+            return "K"
+        else:
+            return units
+
     def average_subproduct(self, product, subproduct, frequency, average, north,
-                               east, south, west, date1, date2):
+                               east, south, west, date1, date2, proj):
             """
             Find the average of a subproduct over an area or point over 2 given dates.
             Averaging done by area or by pixel with an averaging frequency of days/
@@ -180,17 +226,21 @@ class Data:
     Product:    {product}
     Subproduct: {subproduct}
     Lat/Lon:    {north}/{east}
+    Date 1:     {date1}
+    Date 2:     {date2}
     ================================================== 
-    Average = {pixel_average.data}
+    Average = {pixel_average.data} {units}
     """)
                     return pixel_average
 
                 else:
+                    #y_reproj = self.coord_transform_plot(y, subproduct, proj)
                     fig, axs = plt.subplots(figsize=(9, 6),
                                             sharex=True, sharey=True)
-
-                    y[subproduct].resample(time=freq).mean('time').mean('time').plot.imshow(ax=axs)
-                    #axs.set_aspect('equal')
+                    
+                    y[subproduct].resample(time=freq).mean('time').mean('time').plot.imshow(ax=axs, cbar_kwargs={"label" : str(subproduct) + " (" + str(units) + ")"})
+                    
+                    axs.set_aspect('equal')
                     if freq == '1D':
                         plt.title(f'average: days')
                     elif freq == '1MS':
@@ -213,8 +263,10 @@ class Data:
     Product:    {product}
     Subproduct: {subproduct}
     Lat/Lon:    {north}/{east}
+    Date 1:     {date1}
+    Date 2:     {date2}
     ================================================== 
-    Average = {area_average.data}
+    Average = {area_average.data} {units}
     """)
                 return area_average
 
@@ -230,7 +282,10 @@ class Data:
                 self.check_date(product, subproduct, date2)
 
                 self.check(north, east, south, west, date1, date2)
-
+                
+                # Get the units of the subproduct
+                units = Data.get_units(product, subproduct)
+                
                 if north == south and east == west:
 
                     list_of_results = Data.get_data_from_datacube_latlon(
@@ -295,7 +350,10 @@ class Data:
             self.check_date(product, subproduct, date1)
             self.check_date(product, subproduct, date2)
             self.check(north, east, south, west, date1, date2)
-
+            
+            # Get the units of the subproduct
+            units = Data.get_units(product, subproduct)
+                
             if north == south and east == west:
                 list_of_results1 = Data.get_data_from_datacube_latlon(
                     self, product, subproduct, date1, date1, north, east)
@@ -314,10 +372,10 @@ class Data:
 Product:    {product}
 Subproduct: {subproduct}
 Lat/Lon:    {north}/{east}
-===========================================================
-Change was {difference.data} from {date1} to {date2}.""")
+==========================================================
+Change was {difference.data} {units} from {date1} to {date2}.""")
                 
-                return y2[subproduct][0] - y1[subproduct][0]
+                return difference
                 
             else:
                 list_of_results1 = Data.get_data_from_datacube_nesw(
@@ -335,8 +393,8 @@ Change was {difference.data} from {date1} to {date2}.""")
                 difference = y2[subproduct][0] - y1[subproduct][0]
 
                 fig, axs = plt.subplots(figsize=(9, 6))
-
-                difference.plot.imshow(ax=axs)
+             
+                difference.plot.imshow(ax=axs, cbar_kwargs={"label" : str(subproduct) + " (" + str(units) + ")"})
 
                 # Set aspect to equal to avoid any deformation
                 axs.set_aspect('equal')
@@ -385,7 +443,10 @@ Change was {difference.data} from {date1} to {date2}.""")
             self.check_date(product, subproduct, date4)
             self.check(north, east, south, west, date1, date2)
             self.check(north, east, south, west, date3, date4)
-
+            
+            # Get the units of the subproduct to display on the colorbar
+            units = Data.get_units(product, subproduct)
+            
             if north == south and east == west:
 
                 list_of_results1 = Data.get_data_from_datacube_latlon(
@@ -399,7 +460,7 @@ Change was {difference.data} from {date1} to {date2}.""")
                 y2 = list_of_results2
                 
                 if trends == 'overlaid':
-                    fig = plt.figure(figsize=(16, 4))
+                    fig = plt.figure(figsize=(15, 4))
                     
                     axs0 = fig.add_subplot(111)
                     axs1 = axs0.twiny()
@@ -410,18 +471,20 @@ Change was {difference.data} from {date1} to {date2}.""")
                     axs0.set_xlabel('Period 1')
                     axs1.set_xlabel('Period 2')
                     
+                    axs0.set_ylabel(str(subproduct) + ' (' + str(units) + ')')
+                    
                     fig.legend()
                     plt.tight_layout()
                     plt.show(block=False)
                     
                 elif trends == 'side-by-side':
-                    fig, axs = plt.subplots(1, 2, figsize=(16, 4))
+                    fig, axs = plt.subplots(1, 2, figsize=(15, 4))
 
                     y1[subproduct].plot(ax=axs[0])
                     y2[subproduct].plot(ax=axs[1])
 
-#                     axs[0].set_aspect('equal')
-#                     axs[1].set_aspect('equal')
+                    axs[0].set_ylabel(str(subproduct) + ' (' + str(units) + ')')
+                    axs[1].set_ylabel(str(subproduct) + ' (' + str(units) + ')')
                     
                     plt.tight_layout()
                     plt.show(block=False)
@@ -443,11 +506,11 @@ Change was {difference.data} from {date1} to {date2}.""")
                 y2 = list_of_results2
 
                 # Share axis to allow zooming on both plots simultaneously
-                fig, axs = plt.subplots(1, 2, figsize=(16, 4),
+                fig, axs = plt.subplots(1, 2, figsize=(15, 4),
                                         sharex=True, sharey=True)
 
-                y1[subproduct].mean('time').plot.imshow(ax=axs[0])
-                y2[subproduct].mean('time').plot.imshow(ax=axs[1])
+                y1[subproduct].mean('time').plot.imshow(ax=axs[0], cbar_kwargs={"label" : str(subproduct) + " (" + str(units) + ")"})
+                y2[subproduct].mean('time').plot.imshow(ax=axs[1], cbar_kwargs={"label" : str(subproduct) + " (" + str(units) + ")"})
 
                 # Set aspect to equal to avoid any deformation
                 axs[0].set_aspect('equal')
@@ -492,6 +555,10 @@ Change was {difference.data} from {date1} to {date2}.""")
             results_arr1 = []
             results_arr2 = []
 
+            # Get the units of the subproduct to display on the colorbar
+            units1 = Data.get_units(product1, subproduct1)
+            units2 = Data.get_units(product2, subproduct2)
+            
             for count, date in enumerate(dates):
                 self.check_date(product1, subproduct1, date)
                 self.check_date(product2, subproduct2, date)
@@ -524,7 +591,7 @@ Lat/Lon:    {north}/{east}
 ================================================== """)
                 for count, date in enumerate(dates):
                     print(f"""
-{results_arr1[count][subproduct1][0].data} for {date}""")
+{results_arr1[count][subproduct1][0].data} {units1} for {date}""")
             
                 print(f"""
 ==================================================
@@ -534,24 +601,24 @@ Lat/Lon:    {north}/{east}
 ================================================== """)
                 for count, date in enumerate(dates):
                     print(f"""
-{results_arr2[count][subproduct2][0].data} for {date}""")
+{results_arr2[count][subproduct2][0].data} {units2} for {date}""")
                 
                 return results_arr1, results_arr2 
             
             else:
 
-                fig1, axs1 = plt.subplots(1, len(dates), figsize=(16, 4),
+                fig1, axs1 = plt.subplots(1, len(dates), figsize=(15, 4),
                                         sharex=True, sharey=True)
                 
-                fig2, axs2 = plt.subplots(1, len(dates), figsize=(16, 4),
+                fig2, axs2 = plt.subplots(1, len(dates), figsize=(15, 4),
                                         sharex=True, sharey=True)
 
                 for i in range(len(dates)):
                     axs1[i].set_aspect('equal')
-                    results_arr1[i][subproduct1][0].plot.imshow(ax=axs1[i])
+                    results_arr1[i][subproduct1][0].plot.imshow(ax=axs1[i], cbar_kwargs={"label" : str(subproduct1) + " (" + str(units1) + ")"})
 
                     axs2[i].set_aspect('equal')
-                    results_arr2[i][subproduct2][0].plot.imshow(ax=axs2[i])
+                    results_arr2[i][subproduct2][0].plot.imshow(ax=axs2[i], cbar_kwargs={"label" : str(subproduct1) + " (" + str(units2) + ")"})
 
                 fig1.tight_layout()
                 fig1.show()
@@ -605,16 +672,17 @@ Lat/Lon:    {north}/{east}
 
         with self.out:
             clear_output()
-
+            FORMAT = '%Y-%m-%d %H:%M:%S'
             start1 = Data.combine_date_hour(self, date1, hour1)
             end1 = Data.combine_date_hour(self, date1, hour1)
             start2 = Data.combine_date_hour(self, date2, hour2)
             end2 = Data.combine_date_hour(self, date2, hour2)
-
+            
             Data.check(self, north, east, south, west, start1, end1)
             Data.check(self, north, east, south, west, start2, end2)
-            self.check_date(product, subproduct, date1)
-            self.check_date(product, subproduct, date2)
+            
+            self.check_date(product, subproduct, datetime.datetime.strptime(start1, "%Y-%m-%d %H:%M:%S"))
+            self.check_date(product, subproduct, datetime.datetime.strptime(start2, "%Y-%m-%d %H:%M:%S"))
 
             list_of_results1 = Data.get_data_from_datacube_nesw(
                 self, product, subproduct, north, east,
@@ -627,7 +695,7 @@ Lat/Lon:    {north}/{east}
                 south, west, start2, end2)
 
             y2 = list_of_results2
-
+            
             fig, axs = plt.subplots(1, 2, figsize=(16, 8))
             y1.__getitem__(subproduct).plot(ax=axs[0])
             y2.__getitem__(subproduct).plot(ax=axs[1])
@@ -677,11 +745,7 @@ Lat/Lon:    {north}/{east}
             axs[1].set_aspect('equal')
 
             plt.tight_layout()
-
-            plt.show(block=False)
-            plt.imsave(fname='../helpers/files/fig.png', arr=y1[subproduct][0])
-#             extent = axs[0].get_window_extent().transformed(fig.dpi_scale_trans.inverted())
-#             plt.savefig('../helpers/files/fig.png', bbox_inches=extent.expanded(1.1, 1.2))
+            plt.show()
 
             return fig
 
@@ -933,24 +997,21 @@ Lat/Lon:    {north}/{east}
 
             plt.show()
             
-    def data_to_csv_reprojected(self, product, subproduct,
+    def data_to_csv(self, product, subproduct,
                     projection, y, x, start, end):
 
         with self.out:
             clear_output()
             print("Getting data...")
-
-            lat, lon = self.reproject_coords(y, x, projection)
-            data = self.get_data_from_datacube(product,
+            data = self.get_data_from_datacube_latlon(product,
                                                subproduct,
-                                               start,  # pd.to_datetime(start),
-                                               end,  # pd.to_datetime(end),
-                                               lat,
-                                               lon,
-                                               projection)
+                                               start,
+                                               end, 
+                                               y,
+                                               x)
             st = pd.to_datetime(start)
             en = pd.to_datetime(end)
-            filename = f"{product}_{subproduct}_{projection}_{y}_{x}" \
+            filename = f"{product}_{subproduct}_{y}_{x}" \
                        f"_{st.date()}_{en.date()}.csv"
             data.to_dataframe().to_csv(filename)
             localfile = FileLink(filename)
@@ -1006,7 +1067,7 @@ Lat/Lon:    {north}/{east}
 
             y1.rfe.plot(label="2018")
 
-            mean.rfe.plot(label="Climatology", color='gray', alpha=0.6)
+            mean.rfe.plot(label="20 year climatology", color='gray', alpha=0.6)
             plt.fill_between(mean.dayofyear.values,
                              (mean + std).rfe.values,
                              std_min.rfe.values,
@@ -1039,7 +1100,7 @@ Lat/Lon:    {north}/{east}
     
     
     def calculate_degree_days(self, latitude, longitude, start, end, lower,
-                              upper, cutoff):
+                              upper, temp_metric, cutoff):
         """
         Calculate the number of degree days at a location between 2 dates with
         a user specified cut-off type and temperature thresholds.
@@ -1050,26 +1111,48 @@ Lat/Lon:    {north}/{east}
         :param end:         the end date of the period
         :param upper:       the upper temperature threshold
         :param lower:       the lower temperature threshold
+        :param temp_metric: the temperature measurement to use [subproduct]
         :param cutoff:      the calculation cutoff type [vertical/horizontal]
         
         :return:
         """
 
         with self.out:
+            # Convert datetime to date unless already date.
+            try:
+                start_date = start.date()
+            except:
+                start_date = start
+            
+            try: 
+                end_date = end.date()
+            except: 
+                end_date = end
+            
             # Number of days 
-            days = end-start
+            days = end_date-start_date
+            
             clear_output()
-
-            temp = self.get_data_from_datacube_latlon(
-                    'era5',
-                    'skt',
-                    np.datetime64(start),
-                    np.datetime64(end+datetime.timedelta(hours=23)),
-                    latitude,
-                    longitude).skt - 273.15
+            
+            if temp_metric == 'skt':
+                temp = self.get_data_from_datacube_latlon(
+                            product='era5',
+                            subproduct='skt',
+                            start=np.datetime64(start),
+                            end=np.datetime64(end+datetime.timedelta(hours=23)),
+                            latitude=latitude,
+                            longitude=longitude).skt - 273.15
+            
+            elif temp_metric == 't2m':
+                temp = self.get_data_from_datacube_latlon(
+                            product='era5',
+                            subproduct='t2m',
+                            start=np.datetime64(start),
+                            end=np.datetime64(end+datetime.timedelta(hours=23)),
+                            latitude=latitude,
+                            longitude=longitude).t2m - 273.15
             
             temp_orig = temp.copy(deep=True)
-            
             if cutoff == 'Vertical':
             # Set temperatures higher than upper threshold to lower threshold
             # to address pest mortality
@@ -1117,8 +1200,11 @@ Lat/Lon:    {north}/{east}
 
             
             axs[0].set_ylabel('degree days')
-            axs[1].set_ylabel('skt ($^\circ$C)')
             
+            if temp_metric == 'skt':
+                axs[1].set_ylabel('skt ($^\circ$C)')
+            elif temp_metric == 't2m':
+                axs[1].set_ylabel('t2m ($^\circ$C)')
             plt.legend()
             plt.tight_layout()
             plt.show()
@@ -1127,6 +1213,12 @@ Lat/Lon:    {north}/{east}
 {:.2f} degree days occurred over {} days
 =========================================
 """.format(temp.data.sum(), days.days))
+            
+            temp.rename("degree days")
+            filename = f"degree_day_{latitude}_{longitude}" \
+                       f"_{start}_{end}_{lower}_{upper}.csv"
+            temp.to_dataframe().to_csv(filename)
+            display(FileLink(filename))
 
     def combine_date_hour(self, date, hour):
 
@@ -1148,7 +1240,8 @@ Lat/Lon:    {north}/{east}
             y = ("0" + str(h) + ":00:00")
         else:
             y = (str(h) + ":00:00")
-        return "\"" + x + y + "\""
+        return str(x) + str(y)
+        #return "\"" + x + y + "\""
 
     def compare_two_locations(self, product, subproduct, lat1, lon1,
                               lat2, lon2, start_date, start_hour,
@@ -1271,6 +1364,15 @@ Lat/Lon:    {north}/{east}
         return closest
 
     def check_date(self, product, subproduct, date):
+        """
+        Check whether the requested subproduct date is available. If so, return 
+        True, if not, return False and display the closest earlier and later datetimes.
+        
+        :param product:    the name of the requested product
+        :param subproduct: the name of the requested subproduct
+        
+        :return available: True/False if the requested date is available or not.
+        """
 
         ds = Dataset(product=product,
                      subproduct=subproduct,
@@ -1279,7 +1381,6 @@ Lat/Lon:    {north}/{east}
         first_date = ds.first_timestep
         last_date = ds.last_timestep
         available = True
-        
         
         if not isinstance(date, datetime.date):
             date = date.value
@@ -1301,10 +1402,29 @@ Lat/Lon:    {north}/{east}
                 date1 = self.closest_earlier_date(timesteps, date)
                 date2 = self.closest_later_date(timesteps, date)
                 print(f'{date} not available. Nearest available dates: {date1} and {date2}')
-
+        
+#         # If date not available (wrong frequency), try to find a date before and after.
+#         if ds.get_data(start=date, stop=date) is None:
+#             for i in range(400):
+#                 if ds.get_data(start=date+datetime.timedelta(hours=i),
+#                                stop=date+datetime.timedelta(hours=i)) is None:
+#                     continue
+#                 else:
+#                     date1 = date+datetime.timedelta(hours=i)
+#                     break
+#             for i in range(400):
+#                 if ds.get_data(start=date-datetime.timedelta(hours=i),
+#                                stop=date-datetime.timedelta(hours=i)) is None:
+#                     continue
+#                 else:
+#                     date2 = date+datetime.timedelta(hours=i)
+#                     break
+            
+#             print(f'{date} not available. Nearest available dates {date1} and {date2}')
+#             available = False
+        
         if not available:
             raise ValueError(f'{date} not available.')
-
                 
         return available
 
@@ -1371,8 +1491,11 @@ Lat/Lon:    {north}/{east}
         # lat/lon spatial reference system
         latlon = osr.SpatialReference()
         latlon.ImportFromEPSG(4326)
+        
+        if conv is None:
+            return x, y
 
-        if conv == 'bng_to_latlon':
+        elif conv == 'bng_to_latlon':
             transform = osr.CoordinateTransformation(bng, latlon)
             x, y, z = transform.TransformPoint(x, y)
             return round(x, 6), round(y, 6)
@@ -1401,6 +1524,7 @@ Lat/Lon:    {north}/{east}
             transform = osr.CoordinateTransformation(sinu, latlon)
             x, y, z = transform.TransformPoint(x, y)
             return round(x, 6), round(y, 6)
+        
 
     def check_coords(self, north, east, south, west, projection):
         """
@@ -1477,7 +1601,6 @@ Lat/Lon:    {north}/{east}
         
         :return:
         """
-
         with open(filename, 'wb') as f:
             pickle.dump(your_content, f)
 
@@ -1490,7 +1613,6 @@ Lat/Lon:    {north}/{east}
         
         :return data:    unpickled file back to it's original format
         """
-        
         with open(filename, 'rb') as f:
             data = pickle.load(f)
         return data
